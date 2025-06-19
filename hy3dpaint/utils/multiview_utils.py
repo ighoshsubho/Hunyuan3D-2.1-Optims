@@ -25,8 +25,8 @@ from diffusers import EulerAncestralDiscreteScheduler, DDIMScheduler, UniPCMulti
 
 
 class multiviewDiffusionNet:
-    def __init__(self, config) -> None:
-        self.device = config.device
+    def __init__(self, config, device_multiview_unet) -> None:
+        self.device = device_multiview_unet
 
         cfg_path = config.multiview_cfg_path
         custom_pipeline = config.custom_pipeline
