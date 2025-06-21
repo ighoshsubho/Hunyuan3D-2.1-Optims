@@ -20,15 +20,15 @@ from typing import List, Tuple, Optional
 import torch
 from torch import Tensor, nn
 from einops import rearrange
+import numpy as np
 
 # set up attention backend
 scaled_dot_product_attention = nn.functional.scaled_dot_product_attention
-if os.environ.get('USE_SAGEATTN', '0') == '1':
-    try:
-        from sageattention import sageattn
-    except ImportError:
-        raise ImportError('Please install the package "sageattention" to use this USE_SAGEATTN.')
-    scaled_dot_product_attention = sageattn
+try:
+    from sageattention import sageattn_qk_int8_pv_fp16_cuda
+except ImportError:
+    raise ImportError('Please install the package "sageattention" to use this USE_SAGEATTN.')
+scaled_dot_product_attention = sageattn_qk_int8_pv_fp16_cuda
 
 
 def attention(q: Tensor, k: Tensor, v: Tensor, **kwargs) -> Tensor:
@@ -314,6 +314,15 @@ class Hunyuan3DDiT(nn.Module):
         self.out_channels = self.in_channels
         self.guidance_embed = guidance_embed
 
+        # TeaCache attributes
+        self.enable_teacache = False
+        self.cnt = 0
+        self.num_steps = 28  # Default number of inference steps
+        self.rel_l1_thresh = 0.6  # Threshold for L1 distance
+        self.accumulated_rel_l1_distance = 0
+        self.previous_modulated_input = None
+        self.previous_residual = None
+
         if hidden_size % num_heads != 0:
             raise ValueError(
                 f"Hidden size {hidden_size} must be divisible by num_heads {num_heads}"
@@ -378,6 +387,16 @@ class Hunyuan3DDiT(nn.Module):
             print('unexpected keys:', unexpected)
             print('missing keys:', missing)
 
+    def setup_teacache(self, num_inference_steps: int = 28, rel_l1_thresh: float = 0.6):
+        """Setup TeaCache parameters"""
+        self.enable_teacache = True
+        self.num_steps = num_inference_steps
+        self.rel_l1_thresh = rel_l1_thresh
+        self.cnt = 0
+        self.accumulated_rel_l1_distance = 0
+        self.previous_modulated_input = None
+        self.previous_residual = None
+
     def forward(self, x, t, contexts, **kwargs) -> Tensor:
         cond = contexts['main']
         latent = self.latent_in(x)
@@ -392,13 +411,71 @@ class Hunyuan3DDiT(nn.Module):
         cond = self.cond_in(cond)
         pe = None
 
-        for block in self.double_blocks:
-            latent, cond = block(img=latent, txt=cond, vec=vec, pe=pe)
+        # TeaCache logic
+        if self.enable_teacache:
+            # Get the first modulated input for comparison
+            inp = latent.clone()
+            vec_ = vec.clone()
+            
+            # Use the first double block's img_norm1 for modulation (similar to FLUX approach)
+            img_mod1, _ = self.double_blocks[0].img_mod(vec_)
+            modulated_inp = self.double_blocks[0].img_norm1(inp)
+            modulated_inp = (1 + img_mod1.scale) * modulated_inp + img_mod1.shift
+            
+            if self.cnt == 0 or self.cnt == self.num_steps - 1:
+                should_calc = True
+                self.accumulated_rel_l1_distance = 0
+            else:
+                # Use the same polynomial coefficients as in the FLUX TeaCache implementation
+                coefficients = [4.98651651e+02, -2.83781631e+02, 5.58554382e+01, -3.82021401e+00, 2.64230861e-01]
+                rescale_func = np.poly1d(coefficients)
+                rel_l1_distance = ((modulated_inp - self.previous_modulated_input).abs().mean() / 
+                                 self.previous_modulated_input.abs().mean()).cpu().item()
+                self.accumulated_rel_l1_distance += rescale_func(rel_l1_distance)
+                
+                if self.accumulated_rel_l1_distance < self.rel_l1_thresh:
+                    should_calc = False
+                else:
+                    should_calc = True
+                    self.accumulated_rel_l1_distance = 0
+            
+            self.previous_modulated_input = modulated_inp
+            self.cnt += 1
+            if self.cnt == self.num_steps:
+                self.cnt = 0
 
-        latent = torch.cat((cond, latent), 1)
-        for block in self.single_blocks:
-            latent = block(latent, vec=vec, pe=pe)
+        if self.enable_teacache:
+            if not should_calc:
+                # Skip computation and use cached residual
+                latent += self.previous_residual
+            else:
+                # Perform full computation
+                ori_latent = latent.clone()
+                
+                # Double stream blocks
+                for block in self.double_blocks:
+                    latent, cond = block(img=latent, txt=cond, vec=vec, pe=pe)
 
-        latent = latent[:, cond.shape[1]:, ...]
+                # Concatenate and process with single stream blocks
+                latent = torch.cat((cond, latent), 1)
+                for block in self.single_blocks:
+                    latent = block(latent, vec=vec, pe=pe)
+
+                # Extract the latent part (remove condition part)
+                latent = latent[:, cond.shape[1]:, ...]
+                
+                # Cache the residual for future use
+                self.previous_residual = latent - ori_latent
+        else:
+            # Normal forward pass without TeaCache
+            for block in self.double_blocks:
+                latent, cond = block(img=latent, txt=cond, vec=vec, pe=pe)
+
+            latent = torch.cat((cond, latent), 1)
+            for block in self.single_blocks:
+                latent = block(latent, vec=vec, pe=pe)
+
+            latent = latent[:, cond.shape[1]:, ...]
+
         latent = self.final_layer(latent, vec)
         return latent

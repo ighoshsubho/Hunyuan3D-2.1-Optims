@@ -32,6 +32,8 @@ from einops import rearrange
 
 from .moe_layers import MoEBlock
 
+from sageattention import sageattn_qk_int8_pv_fp16_cuda
+
 
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
@@ -215,7 +217,7 @@ class CrossAttention(nn.Module):
             enable_mem_efficient=True
         ):
             q, k, v = map(lambda t: rearrange(t, 'b n h d -> b h n d', h=self.num_heads), (q, k, v))
-            context = F.scaled_dot_product_attention(
+            context = sageattn_qk_int8_pv_fp16_cuda(
                 q, k, v
             ).transpose(1, 2).reshape(b, s1, -1)
 
@@ -227,7 +229,7 @@ class CrossAttention(nn.Module):
             ):
                 k_dca, v_dca = map(lambda t: rearrange(t, 'b n h d -> b h n d', h=self.num_heads),
                                    (k_dca, v_dca))
-                context_dca = F.scaled_dot_product_attention(
+                context_dca = sageattn_qk_int8_pv_fp16_cuda(
                     q, k_dca, v_dca).transpose(1, 2).reshape(b, s1, -1)
 
             context = context + self.dca_weight * context_dca
@@ -291,7 +293,7 @@ class Attention(nn.Module):
             enable_math=False,
             enable_mem_efficient=True
         ):
-            x = F.scaled_dot_product_attention(q, k, v)
+            x = sageattn_qk_int8_pv_fp16_cuda(q, k, v)
             x = x.transpose(1, 2).reshape(B, N, -1)
 
         x = self.out_proj(x)
@@ -511,6 +513,15 @@ class HunYuanDiTPlain(nn.Module):
 
         self.text_len = text_len
 
+        # TeaCache attributes
+        self.enable_teacache = False
+        self.cnt = 0
+        self.num_steps = 28  # Default number of inference steps
+        self.rel_l1_thresh = 0.6  # Threshold for L1 distance
+        self.accumulated_rel_l1_distance = 0
+        self.previous_modulated_input = None
+        self.previous_residual = None
+
         self.x_embedder = nn.Linear(in_channels, hidden_size, bias=True)
         self.t_embedder = TimestepEmbedder(hidden_size, hidden_size * 4, cond_proj_dim=guidance_cond_proj_dim)
 
@@ -563,6 +574,16 @@ class HunYuanDiTPlain(nn.Module):
 
         self.final_layer = FinalLayer(hidden_size, self.out_channels)
 
+    def setup_teacache(self, num_inference_steps: int = 28, rel_l1_thresh: float = 0.6):
+        """Setup TeaCache parameters"""
+        self.enable_teacache = True
+        self.num_steps = num_inference_steps
+        self.rel_l1_thresh = rel_l1_thresh
+        self.cnt = 0
+        self.accumulated_rel_l1_distance = 0
+        self.previous_modulated_input = None
+        self.previous_residual = None
+
     def forward(self, x, t, contexts, **kwargs):
         cond = contexts['main']
 
@@ -585,12 +606,67 @@ class HunYuanDiTPlain(nn.Module):
 
         x = torch.cat([c, x], dim=1)
 
-        skip_value_list = []
-        for layer, block in enumerate(self.blocks):
-            skip_value = None if layer <= self.depth // 2 else skip_value_list.pop()
-            x = block(x, c, cond, skip_value=skip_value)
-            if layer < self.depth // 2:
-                skip_value_list.append(x)
+        # TeaCache logic
+        if self.enable_teacache:
+            # Get the first modulated input for comparison
+            inp = x.clone()
+            c_ = c.clone()
+            
+            # Use the first block's norm1 for modulation (similar to FLUX approach)
+            # For HunYuan, we'll use the norm1 layer as the monitoring point
+            if hasattr(self.blocks[0], 'timested_modulate') and self.blocks[0].timested_modulate:
+                shift_msa = self.blocks[0].default_modulation(c_).unsqueeze(dim=1)
+                modulated_inp = self.blocks[0].norm1(inp + shift_msa)
+            else:
+                modulated_inp = self.blocks[0].norm1(inp)
+            
+            if self.cnt == 0 or self.cnt == self.num_steps - 1:
+                should_calc = True
+                self.accumulated_rel_l1_distance = 0
+            else:
+                # Use the same polynomial coefficients as in the FLUX TeaCache implementation
+                coefficients = [4.98651651e+02, -2.83781631e+02, 5.58554382e+01, -3.82021401e+00, 2.64230861e-01]
+                rescale_func = np.poly1d(coefficients)
+                rel_l1_distance = ((modulated_inp - self.previous_modulated_input).abs().mean() / 
+                                 self.previous_modulated_input.abs().mean()).cpu().item()
+                self.accumulated_rel_l1_distance += rescale_func(rel_l1_distance)
+                
+                if self.accumulated_rel_l1_distance < self.rel_l1_thresh:
+                    should_calc = False
+                else:
+                    should_calc = True
+                    self.accumulated_rel_l1_distance = 0
+            
+            self.previous_modulated_input = modulated_inp
+            self.cnt += 1
+            if self.cnt == self.num_steps:
+                self.cnt = 0
+
+        if self.enable_teacache:
+            if not should_calc:
+                # Skip computation and use cached residual
+                x += self.previous_residual
+            else:
+                # Perform full computation
+                ori_x = x.clone()
+                
+                skip_value_list = []
+                for layer, block in enumerate(self.blocks):
+                    skip_value = None if layer <= self.depth // 2 else skip_value_list.pop()
+                    x = block(x, c, cond, skip_value=skip_value)
+                    if layer < self.depth // 2:
+                        skip_value_list.append(x)
+                
+                # Cache the residual for future use
+                self.previous_residual = x - ori_x
+        else:
+            # Normal forward pass without TeaCache
+            skip_value_list = []
+            for layer, block in enumerate(self.blocks):
+                skip_value = None if layer <= self.depth // 2 else skip_value_list.pop()
+                x = block(x, c, cond, skip_value=skip_value)
+                if layer < self.depth // 2:
+                    skip_value_list.append(x)
 
         x = self.final_layer(x)
         return x

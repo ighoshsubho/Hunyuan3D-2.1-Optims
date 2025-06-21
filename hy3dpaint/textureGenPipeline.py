@@ -38,11 +38,11 @@ class Hunyuan3DPaintConfig:
     def __init__(self, max_num_view, resolution):
         self.device = "cuda"
 
-        self.multiview_cfg_path = "/workspace/Hunyuan3D-2.1/hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
-        self.custom_pipeline = "/workspace/Hunyuan3D-2.1/hy3dpaint/hunyuanpaintpbr"
+        self.multiview_cfg_path = "/workspace/Hunyuan3D-2.1-Optims/hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
+        self.custom_pipeline = "/workspace/Hunyuan3D-2.1-Optims/hy3dpaint/hunyuanpaintpbr"
         self.multiview_pretrained_path = "tencent/Hunyuan3D-2.1"
         self.dino_ckpt_path = "facebook/dinov2-giant"
-        self.realesrgan_ckpt_path = "/workspace/Hunyuan3D-2.1/hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
+        self.realesrgan_ckpt_path = "/workspace/Hunyuan3D-2.1-Optims/hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
 
         self.raster_mode = "cr"
         self.bake_mode = "back_sample"
@@ -70,7 +70,7 @@ class Hunyuan3DPaintConfig:
 
 class Hunyuan3DPaintPipeline:
 
-    def __init__(self, config=None, device_multiview_unet="cuda") -> None:
+    def __init__(self, config=None) -> None:
         self.config = config if config is not None else Hunyuan3DPaintConfig()
         self.models = {}
         self.stats_logs = {}
@@ -81,12 +81,12 @@ class Hunyuan3DPaintPipeline:
             raster_mode=self.config.raster_mode,
         )
         self.view_processor = ViewProcessor(self.config, self.render)
-        self.load_models(device_multiview_unet)
+        self.load_models()
 
-    def load_models(self, device_multiview_unet):
+    def load_models(self):
         torch.cuda.empty_cache()
         self.models["super_model"] = imageSuperNet(self.config)
-        self.models["multiview_model"] = multiviewDiffusionNet(self.config, device_multiview_unet)
+        self.models["multiview_model"] = multiviewDiffusionNet(self.config)
         print("Models Loaded.")
 
     @torch.no_grad()

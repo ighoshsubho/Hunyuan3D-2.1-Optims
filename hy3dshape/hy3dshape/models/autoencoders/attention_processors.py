@@ -18,12 +18,11 @@ import torch
 import torch.nn.functional as F
 
 scaled_dot_product_attention = F.scaled_dot_product_attention
-if os.environ.get('CA_USE_SAGEATTN', '0') == '1':
-    try:
-        from sageattention import sageattn
-    except ImportError:
-        raise ImportError('Please install the package "sageattention" to use this USE_SAGEATTN.')
-    scaled_dot_product_attention = sageattn
+try:
+    from sageattention import sageattn_qk_int8_pv_fp16_cuda
+except ImportError:
+    raise ImportError('Please install the package "sageattention" to use this USE_SAGEATTN.')
+scaled_dot_product_attention = sageattn_qk_int8_pv_fp16_cuda
 
 
 class CrossAttentionProcessor:
