@@ -35,14 +35,23 @@ diffusers_logging.set_verbosity(50)
 
 
 class Hunyuan3DPaintConfig:
-    def __init__(self, max_num_view, resolution):
+    def __init__(
+            self, 
+            max_num_view, 
+            resolution, 
+            multiview_cfg_path, 
+            custom_pipeline, 
+            multiview_pretrained_path,
+            dino_ckpt_path,
+            realesrgan_ckpt_path
+    ) -> None:
         self.device = "cuda"
 
-        self.multiview_cfg_path = "/workspace/Hunyuan3D-2.1-Optims/hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
-        self.custom_pipeline = "/workspace/Hunyuan3D-2.1-Optims/hy3dpaint/hunyuanpaintpbr"
-        self.multiview_pretrained_path = "tencent/Hunyuan3D-2.1"
-        self.dino_ckpt_path = "facebook/dinov2-giant"
-        self.realesrgan_ckpt_path = "/workspace/Hunyuan3D-2.1-Optims/hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
+        self.multiview_cfg_path = "/workspace/Hunyuan3D-2.1-Optims/hy3dpaint/cfgs/hunyuan-paint-pbr.yaml" if multiview_cfg_path is None else multiview_cfg_path
+        self.custom_pipeline = "/workspace/Hunyuan3D-2.1-Optims/hy3dpaint/hunyuanpaintpbr" if custom_pipeline is None else custom_pipeline
+        self.multiview_pretrained_path = "tencent/Hunyuan3D-2.1" if multiview_pretrained_path is None else multiview_pretrained_path
+        self.dino_ckpt_path = "facebook/dinov2-giant" if dino_ckpt_path is None else dino_ckpt_path
+        self.realesrgan_ckpt_path = "/workspace/Hunyuan3D-2.1-Optims/hy3dpaint/ckpt/RealESRGAN_x4plus.pth" if realesrgan_ckpt_path is None else realesrgan_ckpt_path
 
         self.raster_mode = "cr"
         self.bake_mode = "back_sample"
