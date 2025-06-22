@@ -198,4 +198,11 @@ class Hunyuan3DPaintPipeline:
             convert_obj_to_glb(output_mesh_path, output_mesh_path.replace(".obj", ".glb"))
             output_glb_path = output_mesh_path.replace(".obj", ".glb")
 
-        return output_mesh_path
+        final_mesh = trimesh.load(output_mesh_path)
+
+        if os.path.exists(output_mesh_path):
+            os.remove(output_mesh_path)
+        if save_glb and os.path.exists(output_glb_path):
+            os.remove(output_glb_path)
+
+        return final_mesh
