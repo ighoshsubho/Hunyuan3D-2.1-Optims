@@ -32,7 +32,7 @@ from einops import rearrange
 
 from .moe_layers import MoEBlock
 
-from sageattention import sageattn_qk_int8_pv_fp16_cuda
+from sageattention import sageattn
 
 
 def modulate(x, shift, scale):
@@ -217,7 +217,7 @@ class CrossAttention(nn.Module):
             enable_mem_efficient=True
         ):
             q, k, v = map(lambda t: rearrange(t, 'b n h d -> b h n d', h=self.num_heads), (q, k, v))
-            context = sageattn_qk_int8_pv_fp16_cuda(
+            context = sageattn(
                 q, k, v
             ).transpose(1, 2).reshape(b, s1, -1)
 
@@ -229,7 +229,7 @@ class CrossAttention(nn.Module):
             ):
                 k_dca, v_dca = map(lambda t: rearrange(t, 'b n h d -> b h n d', h=self.num_heads),
                                    (k_dca, v_dca))
-                context_dca = sageattn_qk_int8_pv_fp16_cuda(
+                context_dca = sageattn(
                     q, k_dca, v_dca).transpose(1, 2).reshape(b, s1, -1)
 
             context = context + self.dca_weight * context_dca
@@ -293,7 +293,7 @@ class Attention(nn.Module):
             enable_math=False,
             enable_mem_efficient=True
         ):
-            x = sageattn_qk_int8_pv_fp16_cuda(q, k, v)
+            x = sageattn(q, k, v)
             x = x.transpose(1, 2).reshape(B, N, -1)
 
         x = self.out_proj(x)

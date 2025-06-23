@@ -25,10 +25,10 @@ import numpy as np
 # set up attention backend
 scaled_dot_product_attention = nn.functional.scaled_dot_product_attention
 try:
-    from sageattention import sageattn_qk_int8_pv_fp16_cuda
+    from sageattention import sageattn
 except ImportError:
     raise ImportError('Please install the package "sageattention" to use this USE_SAGEATTN.')
-scaled_dot_product_attention = sageattn_qk_int8_pv_fp16_cuda
+scaled_dot_product_attention = sageattn
 
 
 def attention(q: Tensor, k: Tensor, v: Tensor, **kwargs) -> Tensor:

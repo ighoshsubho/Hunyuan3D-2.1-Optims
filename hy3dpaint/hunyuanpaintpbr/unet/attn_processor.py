@@ -20,7 +20,7 @@ from einops import rearrange
 from diffusers.utils import deprecate
 from diffusers.models.attention_processor import Attention, AttnProcessor
 
-from sageattention import sageattn_qk_int8_pv_fp16_cuda
+from sageattention import sageattn
 
 
 class AttnUtils:
@@ -544,7 +544,7 @@ class AttnCore:
             query, key = apply_rope_fn(query, key, head_dim, **kwargs)
 
         # Compute attention
-        hidden_states = sageattn_qk_int8_pv_fp16_cuda(
+        hidden_states = sageattn(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
 
